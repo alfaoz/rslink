@@ -90,23 +90,40 @@ CC: Tweaked).
 
 ### Transmit
 
+`sendLinkSignal` yields the coroutine for ~1 tick per call (measured: exactly
+50.000 ms/call sequential). Data-lane writes must be dispatched via
+`parallel.waitForAll` to amortize the yield across one tick. Measured cost:
+255 parallel calls = 2 ticks (~100 ms).
+
 ```lua
 function transmit_symbol(nibbles)  -- nibbles[1..255]
-  -- 1. Park clock at sentinel so receiver knows data is in flux
   local cf1, cf2 = pair_for_lane(0)
+
+  -- 1. Park clock at sentinel (1 tick)
   bridge.sendLinkSignal(cf1, cf2, 15)
 
-  -- 2. Write all data lanes
+  -- 2. Write all data lanes concurrently (~2 ticks via parallel)
+  local fns = {}
   for lane = 1, 255 do
-    local f1, f2 = pair_for_lane(lane)
-    bridge.sendLinkSignal(f1, f2, nibbles[lane] or 0)
+    fns[lane] = function()
+      local f1, f2 = pair_for_lane(lane)
+      bridge.sendLinkSignal(f1, f2, nibbles[lane] or 0)
+    end
   end
+  parallel.waitForAll(table.unpack(fns))
 
-  -- 3. Publish real sequence number (0..14)
+  -- 3. Publish real sequence number 0..14 (1 tick)
   current_seq = (current_seq + 1) % 15
   bridge.sendLinkSignal(cf1, cf2, current_seq)
 end
 ```
+
+The sentinel write and the real-seq write are not in the parallel batch
+because their ordering matters: sentinel must land before data lanes change,
+real_seq must land after they're all stable. Parallel dispatch within step 2
+is safe because the receiver only latches when clock ≠ 15.
+
+Symbol period: ~200 ms = 5 symbols/sec.
 
 ### Receive
 
@@ -228,31 +245,32 @@ available.
 **v2+:** multi-hop routing, encryption/auth (frequency hopping + HMAC),
 heartbeat/health monitoring.
 
-## Open questions to resolve in-game
+## Open questions
 
-Tests in `tests/` answer each:
+| Test | Question | Result |
+|---|---|---|
+| `test_yield` | Does `sendLinkSignal` yield? | **Yes — exactly 1 tick / call sequential.** |
+| `test_parallel_yield` | Does `parallel.waitForAll` amortize? | **Yes — 255 calls in 2 ticks.** |
+| `test_self_propagation` | Self read-after-write latency? | 0 ticks (instant). |
+| `test_cross_send` + `_recv` | Cross-bridge propagation T? | **T = 2 ticks (100 ms) consistently.** |
+| `test_concurrent_writer` + `_reader` | Aggregation rule? | *pending* |
 
-1. **Does `sendLinkSignal` yield mid-call?** (`test_yield`) — informs whether
-   the sentinel scheme is overkill, just-right, or insufficient.
-2. **Cross-bridge propagation T.** (`test_cross_send` + `test_cross_recv`) —
-   sets symbol period.
-3. **Concurrent-write aggregation.** (`test_concurrent_writer` ×2 +
-   `test_concurrent_reader`) — confirms max-aggregation assumption.
+Concurrent-write aggregation is the last open question before writing
+framing or MAC code.
 
-Run all three before writing the framing or MAC code.
-
-## Numbers (assuming T=2, max-agg, no per-call yield)
+## Numbers (T=2, parallel-amortized writes)
 
 | Metric | Value |
 |---|---|
 | Items reserved | 16 |
 | Frequency pairs used | 256 / 256 |
-| Bits per symbol | 1020 |
-| Bytes per symbol (raw) | 127 |
+| `sendLinkSignal` cost (sequential) | 50 ms / call (1 tick) |
+| `sendLinkSignal` cost (255 parallel) | ~100 ms (2 ticks) |
+| Symbol period | 200 ms (sentinel + parallel data + real-seq) |
+| Symbols/sec | 5 |
 | Bytes per symbol (after SYMBOL_SEQ) | 126 |
-| Symbols/sec | 10 |
-| Raw throughput | ~1.26 KB/s |
-| Useful throughput (after framing) | ~1.0 KB/s |
+| Raw throughput | ~0.63 KB/s |
+| Useful throughput (after framing) | ~0.6 KB/s |
 | Max payload per frame (on wire) | 256 B |
 | Max user message | unbounded (API fragments) |
 | ACK timeout (default) | 500 ms |
