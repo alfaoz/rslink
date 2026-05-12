@@ -276,10 +276,14 @@ function M.run()
   parallel.waitForAny(rx, reassemble)
 end
 
--- Convenience wrapper. Spawns M.run() alongside `user_main`.
+-- Convenience wrapper. Spawns M.run() alongside `user_main`. Always calls
+-- close() on exit — this guarantees the bridge gets quieted even if
+-- user_main returns normally or throws.
 function M.host(my_id, user_main, opts)
   if not state.opened then M.open(my_id, opts) end
-  parallel.waitForAny(M.run, user_main)
+  local ok, err = pcall(parallel.waitForAny, M.run, user_main)
+  M.close()
+  if not ok then error(err, 0) end
 end
 
 --------------------------------------------------------------------------------

@@ -37,8 +37,10 @@ M.TRAILER_BYTES        = 2     -- CRC16 little-endian
 M.SYMBOL_HEADER_BYTES  = 1     -- SYMBOL_SEQ
 M.SYMBOL_BODY_BYTES    = 126   -- 254 nibbles / 2, minus SYMBOL_SEQ
 M.SYMBOL_PERIOD_S      = 0.20  -- transmit cost: sentinel + parallel data + real_seq
-M.INTER_SYMBOL_DELAY_S = 0.10  -- pause between back-to-back symbols so receivers
+M.INTER_SYMBOL_DELAY_S = 0.15  -- pause between back-to-back symbols so receivers
                                -- get a clean read window before next sentinel
+                               -- (3 ticks: covers receiver's 2-tick parallel
+                               -- read + 1 tick of jitter / scheduling margin)
 M.SYMBOL_NIBBLES       = 254   -- 255 data lanes minus the SYMBOL_SEQ byte (2 nibbles)
 
 -- IDs
