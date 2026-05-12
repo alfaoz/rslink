@@ -19,6 +19,16 @@ end
 
 local function extract_wxyz(q)
   if type(q) ~= "table" then return nil end
+  -- CC: Advanced Math quaternion: { a = scalar, v = vector{x,y,z} }
+  if type(q.a) == "number" and type(q.v) == "table" then
+    local v = q.v
+    local x = v.x or v[1]
+    local y = v.y or v[2]
+    local z = v.z or v[3]
+    if type(x) == "number" and type(y) == "number" and type(z) == "number" then
+      return q.a, x, y, z, "{a, v}"
+    end
+  end
   if type(q.w) == "number" and type(q.x) == "number" then
     return q.w, q.x, q.y, q.z, "fields"
   end
