@@ -86,12 +86,17 @@ end
 -- per-chunk SYMBOL_SEQ, and transmits each chunk as one symbol.
 --
 -- After each symbol's real_seq is published, we sleep INTER_SYMBOL_DELAY_S
--- before starting the next symbol's sentinel write. This gives any polling
--- receiver enough time to (a) detect our clock change, (b) finish its
--- parallel-read of all 255 data lanes (~2 ticks), and (c) re-check the
--- clock to confirm no one else moved it — all before we'd start the next
--- symbol's data writes. Without this, multi-symbol frames lose ~50% of
--- their symbols to torn reads on the receiver side.
+-- before starting the next symbol's sentinel write. Without this, multi-symbol
+-- frames lose ~50% of their symbols to torn reads on the receiver side.
+--
+-- After the LAST symbol of a frame, we zero all 256 lanes on our bridge.
+-- Create's redstone-link bridges hold and continuously rebroadcast their
+-- last-set value. Without the clear, our last-written values persist on
+-- the wire, and max-aggregation against the *next* transmitter blocks
+-- their values whenever ours are higher — most catastrophically on the
+-- clock lane (a receiver can't write clock=1 if we still hold clock=3,
+-- because max(3,1)=3 and no transition is visible). This is what makes
+-- ACKs and any back-and-forth traffic fail.
 function M:transmit_frame_bytes(bytes)
   local n = #bytes
   local body_size = config.SYMBOL_BODY_BYTES   -- 126
@@ -120,6 +125,29 @@ function M:transmit_frame_bytes(bytes)
       os.sleep(gap_s)
     end
   end
+
+  -- Release the bus: zero all 256 lanes so we stop holding values.
+  self:clear_lanes()
+end
+
+-- clear_lanes — write 0 to all 256 lanes on our bridge. Used after a frame
+-- transmit completes and on rslink.close() teardown.
+function M:clear_lanes()
+  local bridge = self.bridge
+  local alpha  = self.alphabet
+  local fns = {}
+  for lane = 0, 255 do
+    local i = math.floor(lane / 16) + 1
+    local j = (lane % 16) + 1
+    local f1, f2 = alpha[i], alpha[j]
+    fns[lane + 1] = function() bridge.sendLinkSignal(f1, f2, 0) end
+  end
+  parallel.waitForAll(table.unpack(fns))
+  -- After clearing, our own RX state is stale (last_real_clock points at a
+  -- value we're no longer holding). Reset it so the next external symbol
+  -- triggers a fresh latch rather than being missed.
+  self.last_real_clock = 0
+  self.saw_sentinel    = false
 end
 
 --------------------------------------------------------------------------------
