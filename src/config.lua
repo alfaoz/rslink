@@ -24,8 +24,16 @@ M.ALPHABET = {
 -- Lane layout
 M.CLOCK_LANE       = 0
 M.DATA_LANE_COUNT  = 255
-M.CLOCK_SENTINEL   = 15  -- "data in flux, don't latch"
-M.MAX_REAL_SEQ     = 14  -- real clock seqs cycle 0..14
+-- Clock-lane value semantics (4 bits, 0..15):
+--   0       = IDLE   (bus cleared; no active transmitter)
+--   1..14   = real sequence number for the current symbol
+--   15      = SENTINEL (transmitter is mid-write; do not latch)
+-- Both IDLE and SENTINEL cause receivers to skip latching, so carrier-sense
+-- can use IDLE as the unambiguous "safe to transmit" signal.
+M.CLOCK_SENTINEL   = 15
+M.CLOCK_IDLE       = 0
+M.MIN_REAL_SEQ     = 1
+M.MAX_REAL_SEQ     = 14
 
 -- Frame
 M.FRAME_START          = 0xA5
@@ -54,11 +62,11 @@ M.MAC_BACKOFF_MIN_TICKS   = 5
 M.MAC_BACKOFF_MAX_TICKS   = 30
 
 -- Reliability
--- Generous default: receiver must wait for our full multi-symbol transmission
--- to finish, pass its own MAC carrier-sense, then transmit its own ACK back.
--- For a 3-symbol frame at 300 ms/sym that's already ~900 ms; 2 s leaves room
--- for some receiver-side backoff.
-M.DEFAULT_ACK_TIMEOUT_S = 2.0
+-- The receiver has to wait for our full multi-symbol transmit + 1-tick settle
+-- + ~6-tick ordered clear before its carrier-sense can succeed, then transmit
+-- its own ACK + settle + clear. For a 1-symbol ping that's ~25-50 ticks
+-- (1.25-2.5 s) even on the happy path; 3 s leaves room for a backoff cycle.
+M.DEFAULT_ACK_TIMEOUT_S = 3.0
 M.DEFAULT_MAX_RETRIES   = 3
 M.BACKOFF_MS            = { 200, 400, 800 }
 M.DEDUP_WINDOW          = 16

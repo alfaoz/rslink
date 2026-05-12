@@ -9,12 +9,14 @@
 --   lane 255   reserved (always 0; future use)
 --
 -- Clock lane (lane 0):
---   value 0..14 — real seq number (cycles 0..14, wrap)
---   value 15    — SENTINEL: "data is mid-write, do not latch"
+--   value 0     — IDLE: bus cleared / no active transmitter (receivers skip)
+--   value 1..14 — real seq number for this symbol (cycles 1..14, skips 0)
+--   value 15    — SENTINEL: transmitter is mid-write, do not latch
 --
--- The receiver only latches when the clock lane transitions to a non-sentinel
--- value distinct from its last latched value. This makes the protocol robust
--- against partial writes even if sendLinkSignal yields the coroutine per call.
+-- Receivers only latch when the clock lane transitions to a real seq value
+-- (1..14) distinct from their last latched value. IDLE and SENTINEL both
+-- count as "interruption observed", so the receiver will re-latch on the
+-- next real value even if it happens to repeat the last seq.
 
 local config   = require("rslink.config")
 local resolver = require("rslink.resolver")
@@ -23,8 +25,9 @@ local frame    = require("rslink.frame")
 local M = {}
 M.__index = M
 
-local SENTINEL  = config.CLOCK_SENTINEL
-local MAX_SEQ   = config.MAX_REAL_SEQ
+local SENTINEL   = config.CLOCK_SENTINEL
+local IDLE       = config.CLOCK_IDLE
+local MAX_SEQ    = config.MAX_REAL_SEQ
 local DATA_LANES = config.DATA_LANE_COUNT
 local SYMBOL_NIBBLES = 254       -- 255 data lanes; last is reserved
 
@@ -40,10 +43,10 @@ function M.new(opts)
   if not self.bridge then
     error("rslink.symbol: no redstone_link_bridge peripheral found", 2)
   end
-  self.tx_clock_seq    = 0     -- our next clock sequence number to publish
+  self.tx_clock_seq    = 0     -- last published clock seq; bumped before each symbol
   self.tx_symbol_seq   = 0     -- our next SYMBOL_SEQ counter (0..255)
-  self.last_real_clock = nil   -- last non-sentinel clock value latched
-  self.saw_sentinel    = false -- did we observe sentinel since last latch?
+  self.last_real_clock = nil   -- last real-seq clock value latched (1..14)
+  self.saw_sentinel    = false -- observed IDLE or SENTINEL since last latch?
   return self
 end
 
@@ -78,7 +81,8 @@ function M:transmit_symbol(nibbles)
   parallel.waitForAll(table.unpack(fns))
 
   -- 3. Publish real seq number → receivers latch and read all data lanes.
-  self.tx_clock_seq = (self.tx_clock_seq + 1) % (MAX_SEQ + 1)
+  -- Cycle through 1..MAX_SEQ (skip 0, which is the IDLE marker).
+  self.tx_clock_seq = (self.tx_clock_seq % MAX_SEQ) + 1
   bridge.sendLinkSignal(cf1, cf2, self.tx_clock_seq)
 end
 
@@ -126,28 +130,39 @@ function M:transmit_frame_bytes(bytes)
     end
   end
 
+  -- Settle: hold the last symbol on the wire for one tick so receivers have
+  -- a guaranteed window to latch before we tear the values down.
+  os.sleep(0.05)
+
   -- Release the bus: zero all 256 lanes so we stop holding values.
   self:clear_lanes()
 end
 
--- clear_lanes — write 0 to all 256 lanes on our bridge. Used after a frame
--- transmit completes and on rslink.close() teardown.
+-- clear_lanes — zero every lane on our bridge so we stop dominating the wire.
+-- Order matters: data lanes first (in parallel), clock lane LAST. That way
+-- the wire-clock dropping to IDLE (0) is the canonical signal that ALL of our
+-- lanes have settled — carrier-sense on the clock lane is then sufficient
+-- for other senders to know it's safe to transmit.
 function M:clear_lanes()
   local bridge = self.bridge
   local alpha  = self.alphabet
+  local cf1, cf2 = alpha[1], alpha[1]
+
+  -- Phase 1: zero data lanes (1..255) in parallel.
   local fns = {}
-  for lane = 0, 255 do
+  for lane = 1, 255 do
     local i = math.floor(lane / 16) + 1
     local j = (lane % 16) + 1
     local f1, f2 = alpha[i], alpha[j]
-    fns[lane + 1] = function() bridge.sendLinkSignal(f1, f2, 0) end
+    fns[lane] = function() bridge.sendLinkSignal(f1, f2, 0) end
   end
   parallel.waitForAll(table.unpack(fns))
-  -- After clearing, our own RX state is stale (last_real_clock points at a
-  -- value we're no longer holding). Reset it so the next external symbol
-  -- triggers a fresh latch rather than being missed.
-  self.last_real_clock = 0
-  self.saw_sentinel    = false
+
+  -- Phase 2: clock lane to IDLE last → publishes "we are done" atomically.
+  bridge.sendLinkSignal(cf1, cf2, IDLE)
+
+  -- Mark interruption so our own RX re-latches on the next real symbol.
+  self.saw_sentinel = true
 end
 
 --------------------------------------------------------------------------------
@@ -169,14 +184,15 @@ function M:poll_once()
   local cf2    = alpha[1]
 
   local clock = bridge.getLinkSignal(cf1, cf2)
-  if clock == SENTINEL then
-    -- Note the sentinel so we can trigger on the next real value even if
-    -- it happens to equal our last latched value (two senders cycling).
+  if clock == SENTINEL or clock == IDLE then
+    -- Mid-write OR bus cleared — either way, not a latchable symbol.
+    -- Note it so we can trigger on the next real value even if it happens
+    -- to equal our last latched value (covers seq wraps & sender switches).
     self.saw_sentinel = true
     return nil
   end
   -- Trigger on either: clock changed since last latch, OR we observed
-  -- the sentinel in between (covers same-value-from-different-sender).
+  -- an interruption (idle/sentinel) in between.
   if clock == self.last_real_clock and not self.saw_sentinel then
     return nil   -- no new symbol
   end

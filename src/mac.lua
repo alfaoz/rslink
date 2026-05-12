@@ -1,15 +1,19 @@
 -- rslink.mac — carrier-sense multiple access for the shared redstone bus.
 --
--- Before transmitting, sample the clock lane for K ticks. If it changes at
--- any point, the bus is busy → back off a random number of ticks and retry.
--- The clock lane bumps once per symbol on whoever is currently transmitting,
--- so any active sender is visible at this layer.
+-- Before transmitting, sample the clock lane for K ticks. The bus is "clear"
+-- iff the clock lane reads IDLE (0) for the entire window. Any other value
+-- (1..14 = real seq, 15 = sentinel) means SOMEONE is mid-transmit or hasn't
+-- finished clearing yet → back off a random number of ticks and retry.
+--
+-- This relies on the symbol layer's clear_lanes() writing the clock to IDLE
+-- LAST, so a seen clock=IDLE means all 256 lanes have settled.
 --
 -- Collisions can still happen when two senders both pass carrier-sense in
 -- the same tick. They are not detected by the MAC; the receiver catches them
 -- via CRC failure, and the reliability layer retries on ACK timeout.
 
 local config = require("rslink.config")
+local IDLE   = config.CLOCK_IDLE
 
 local M = {}
 M.__index = M
@@ -28,14 +32,14 @@ function M.new(symbol_layer, opts)
   return self
 end
 
--- Sample the clock lane for K ticks; return true iff it stayed constant.
+-- Sample the clock lane for K ticks; return true iff it reads IDLE the
+-- entire time. Any non-IDLE value means another sender is mid-transmit
+-- or hasn't finished clearing.
 function M:carrier_sense()
   local cf = self.alphabet[1]
-  local clock0 = self.bridge.getLinkSignal(cf, cf)
   for _ = 1, self.carrier_sense_ticks do
+    if self.bridge.getLinkSignal(cf, cf) ~= IDLE then return false end
     os.sleep(0.05)
-    local clock = self.bridge.getLinkSignal(cf, cf)
-    if clock ~= clock0 then return false end
   end
   return true
 end
