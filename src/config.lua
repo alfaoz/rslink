@@ -36,7 +36,9 @@ M.TRAILER_BYTES        = 2     -- CRC16 little-endian
 -- Symbol
 M.SYMBOL_HEADER_BYTES  = 1     -- SYMBOL_SEQ
 M.SYMBOL_BODY_BYTES    = 126   -- 254 nibbles / 2, minus SYMBOL_SEQ
-M.SYMBOL_PERIOD_S      = 0.20  -- ~5 sym/s
+M.SYMBOL_PERIOD_S      = 0.20  -- transmit cost: sentinel + parallel data + real_seq
+M.INTER_SYMBOL_DELAY_S = 0.10  -- pause between back-to-back symbols so receivers
+                               -- get a clean read window before next sentinel
 M.SYMBOL_NIBBLES       = 254   -- 255 data lanes minus the SYMBOL_SEQ byte (2 nibbles)
 
 -- IDs
@@ -50,9 +52,13 @@ M.MAC_BACKOFF_MIN_TICKS   = 5
 M.MAC_BACKOFF_MAX_TICKS   = 30
 
 -- Reliability
-M.DEFAULT_ACK_TIMEOUT_S = 0.5
+-- Generous default: receiver must wait for our full multi-symbol transmission
+-- to finish, pass its own MAC carrier-sense, then transmit its own ACK back.
+-- For a 3-symbol frame at 300 ms/sym that's already ~900 ms; 2 s leaves room
+-- for some receiver-side backoff.
+M.DEFAULT_ACK_TIMEOUT_S = 2.0
 M.DEFAULT_MAX_RETRIES   = 3
-M.BACKOFF_MS            = { 100, 200, 400 }
+M.BACKOFF_MS            = { 200, 400, 800 }
 M.DEDUP_WINDOW          = 16
 
 return M

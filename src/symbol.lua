@@ -84,16 +84,24 @@ end
 
 -- transmit_frame_bytes(byte_array) — splits into 126-byte chunks, prepends
 -- per-chunk SYMBOL_SEQ, and transmits each chunk as one symbol.
+--
+-- After each symbol's real_seq is published, we sleep INTER_SYMBOL_DELAY_S
+-- before starting the next symbol's sentinel write. This gives any polling
+-- receiver enough time to (a) detect our clock change, (b) finish its
+-- parallel-read of all 255 data lanes (~2 ticks), and (c) re-check the
+-- clock to confirm no one else moved it — all before we'd start the next
+-- symbol's data writes. Without this, multi-symbol frames lose ~50% of
+-- their symbols to torn reads on the receiver side.
 function M:transmit_frame_bytes(bytes)
   local n = #bytes
   local body_size = config.SYMBOL_BODY_BYTES   -- 126
+  local gap_s     = config.INTER_SYMBOL_DELAY_S
   local pos = 1
 
   while pos <= n do
     local chunk_end = math.min(pos + body_size - 1, n)
     local chunk_len = chunk_end - pos + 1
 
-    -- Build symbol byte buffer: [SYMBOL_SEQ] + [chunk_bytes] + zero-padding
     local symbol_bytes = { self.tx_symbol_seq }
     for i = 0, chunk_len - 1 do
       symbol_bytes[2 + i] = bytes[pos + i]
@@ -102,13 +110,15 @@ function M:transmit_frame_bytes(bytes)
       symbol_bytes[1 + i] = 0
     end
 
-    -- Convert to 254 nibbles (127 bytes × 2 nibbles each = 254)
     local nibbles = frame.bytes_to_nibbles(symbol_bytes)
-
     self:transmit_symbol(nibbles)
 
     self.tx_symbol_seq = (self.tx_symbol_seq + 1) % 256
     pos = pos + chunk_len
+
+    if pos <= n then
+      os.sleep(gap_s)
+    end
   end
 end
 

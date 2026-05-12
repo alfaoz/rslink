@@ -47,7 +47,27 @@ local function poll_all()
   return read
 end
 
+-- Symbol counter — based on the RAW clock reading, not the decayed activity
+-- (which pegs near 15 under sustained traffic and never transitions cleanly).
+local last_raw_clock  = -1
+local sym_count_acc   = 0
+local sym_per_sec     = 0
+local last_window_t   = os.epoch("utc")
+
 local function update(read)
+  -- Step the symbol counter off the raw clock read.
+  local c = read[0]
+  if c ~= SENTINEL and c ~= last_raw_clock then
+    sym_count_acc = sym_count_acc + 1
+    last_raw_clock = c
+  end
+  local now = os.epoch("utc")
+  if now - last_window_t >= 1000 then
+    sym_per_sec   = sym_count_acc
+    sym_count_acc = 0
+    last_window_t = now
+  end
+
   for lane = 0, 255 do
     local r = read[lane] or 0
     if r > activity[lane] then
@@ -79,29 +99,7 @@ local function color_for(v, is_clock)
   return colors.yellow
 end
 
--- Symbols-per-second estimator: every distinct non-sentinel clock transition
--- counts as one symbol observed.
-local last_clock      = -1
-local sym_count_acc   = 0
-local sym_per_sec     = 0
-local last_window_t   = os.epoch("utc")
-
-local function step_counter()
-  local c = activity[0]
-  if c ~= SENTINEL and c ~= last_clock then
-    sym_count_acc = sym_count_acc + 1
-    last_clock = c
-  end
-  local now = os.epoch("utc")
-  if now - last_window_t >= 1000 then
-    sym_per_sec   = sym_count_acc
-    sym_count_acc = 0
-    last_window_t = now
-  end
-end
-
 local function draw()
-  step_counter()
 
   term.setBackgroundColor(colors.black)
   term.setTextColor(colors.white)

@@ -126,11 +126,12 @@ function M:send_broadcast(payload_str)
 end
 
 -- Internal: send an ACK frame back to `dst` with `seq`. Empty payload.
+-- ACKs use a tight retry loop with brief CSMA — the sender is waiting on
+-- a timeout (default 2 s) and if our ACK loses too much to backoff we miss
+-- the window and force the sender to retransmit the whole frame.
 function M:send_ack(dst, seq)
   local bytes = frame.encode_frame(self.my_id, dst, seq, "")
-  self.mac:transmit_bytes(bytes)
-  -- ACKs don't count toward tx_frames / tx_bytes user-visible counters by
-  -- convention; track them separately if needed.
+  self.mac:transmit_bytes(bytes, 6)   -- few attempts, fast turnaround
 end
 
 --------------------------------------------------------------------------------

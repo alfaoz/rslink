@@ -117,15 +117,23 @@ commands.speed = function(parts)
 
   local payload = string.rep("X", size)
   local N = 10
-  print(("speed: sending %d messages of %d B to id %d..."):format(N, size, dst))
+  print(("speed: %d × %d B → id %d"):format(N, size, dst))
   local t0 = os.epoch("utc")
   local ok_count = 0
   for i = 1, N do
-    if rslink.send(dst, payload) then ok_count = ok_count + 1 end
+    local mt0 = os.epoch("utc")
+    local ok = rslink.send(dst, payload)
+    local mdt = os.epoch("utc") - mt0
+    if ok then
+      ok_count = ok_count + 1
+      print(("  #%2d ok in %d ms"):format(i, mdt))
+    else
+      print(("  #%2d TIMEOUT after %d ms"):format(i, mdt))
+    end
   end
   local dt    = (os.epoch("utc") - t0) / 1000
   local total = ok_count * size
-  print(("  %d/%d msgs ACKed in %.2f s"):format(ok_count, N, dt))
+  print(("done: %d/%d in %.2f s"):format(ok_count, N, dt))
   if ok_count > 0 then
     print(("  payload throughput: %s/s"):format(fmt_size(total / dt)))
   end
