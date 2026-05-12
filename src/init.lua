@@ -83,6 +83,22 @@ function M.open(my_id, opts)
 end
 
 function M.close()
+  -- Quiet the bridge before tearing down. Bridges continuously broadcast
+  -- their last-set value onto Create's link network, even when the host
+  -- computer is shut down — so leaving non-zero values on the lanes turns
+  -- the bridge into a persistent transmitter that keeps occupying the bus.
+  if state.symbol then
+    local bridge   = state.symbol.bridge
+    local alphabet = state.symbol.alphabet
+    local fns = {}
+    for lane = 0, 255 do
+      local i = math.floor(lane / 16) + 1
+      local j = (lane % 16) + 1
+      local f1, f2 = alphabet[i], alphabet[j]
+      fns[lane + 1] = function() bridge.sendLinkSignal(f1, f2, 0) end
+    end
+    pcall(parallel.waitForAll, table.unpack(fns))
+  end
   state.opened      = false
   state.my_id       = nil
   state.symbol      = nil
