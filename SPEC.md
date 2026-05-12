@@ -253,10 +253,10 @@ heartbeat/health monitoring.
 | `test_parallel_yield` | Does `parallel.waitForAll` amortize? | **Yes — 255 calls in 2 ticks.** |
 | `test_self_propagation` | Self read-after-write latency? | 0 ticks (instant). |
 | `test_cross_send` + `_recv` | Cross-bridge propagation T? | **T = 2 ticks (100 ms) consistently.** |
-| `test_concurrent_writer` + `_reader` | Aggregation rule? | *pending* |
+| `test_concurrent_writer` + `_reader` | Aggregation rule? | **MAX (300/300 reads saw 7 with writers at 3 and 7).** |
 
-Concurrent-write aggregation is the last open question before writing
-framing or MAC code.
+All open questions resolved. Spec is locked; read-back collision detection
+in the MAC layer is viable.
 
 ## Numbers (T=2, parallel-amortized writes)
 
