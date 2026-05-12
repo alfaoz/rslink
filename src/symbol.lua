@@ -130,9 +130,13 @@ function M:transmit_frame_bytes(bytes)
     end
   end
 
-  -- Settle: hold the last symbol on the wire for one tick so receivers have
-  -- a guaranteed window to latch before we tear the values down.
-  os.sleep(0.05)
+  -- Settle: hold the last symbol on the wire long enough that any receiver
+  -- whose poll caught clock=N can finish its ~5-tick parallel read of the
+  -- 255 data lanes BEFORE clear_lanes starts zeroing them. Without this,
+  -- the receiver gets a torn (half-real, half-zero) read but the re-check
+  -- passes because the clock lane isn't cleared until phase 2 → silent
+  -- CRC failures = ghost-quiet broadcasts.
+  os.sleep(0.30)
 
   -- Release the bus: zero all 256 lanes so we stop holding values.
   self:clear_lanes()

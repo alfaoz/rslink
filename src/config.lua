@@ -62,11 +62,11 @@ M.MAC_BACKOFF_MIN_TICKS   = 5
 M.MAC_BACKOFF_MAX_TICKS   = 30
 
 -- Reliability
--- The receiver has to wait for our full multi-symbol transmit + 1-tick settle
--- + ~6-tick ordered clear before its carrier-sense can succeed, then transmit
--- its own ACK + settle + clear. For a 1-symbol ping that's ~25-50 ticks
--- (1.25-2.5 s) even on the happy path; 3 s leaves room for a backoff cycle.
-M.DEFAULT_ACK_TIMEOUT_S = 3.0
+-- The receiver has to wait for our full transmit + 6-tick settle + ~6-tick
+-- ordered clear before its carrier-sense can succeed, then transmit its own
+-- ACK back with the same overhead. For a 1-symbol ping that's ~45 ticks
+-- (2.3 s) on the happy path; 4 s leaves room for a backoff cycle or two.
+M.DEFAULT_ACK_TIMEOUT_S = 4.0
 M.DEFAULT_MAX_RETRIES   = 3
 M.BACKOFF_MS            = { 200, 400, 800 }
 M.DEDUP_WINDOW          = 16
