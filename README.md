@@ -27,6 +27,7 @@ This drops six test scripts in `/rslink-tests/`. Or grab individual files:
 
 ```
 wget https://raw.githubusercontent.com/alfaoz/rslink/main/tests/test_yield.lua
+wget https://raw.githubusercontent.com/alfaoz/rslink/main/tests/test_parallel_yield.lua
 wget https://raw.githubusercontent.com/alfaoz/rslink/main/tests/test_self_propagation.lua
 wget https://raw.githubusercontent.com/alfaoz/rslink/main/tests/test_cross_send.lua
 wget https://raw.githubusercontent.com/alfaoz/rslink/main/tests/test_cross_recv.lua
@@ -40,13 +41,22 @@ wget https://raw.githubusercontent.com/alfaoz/rslink/main/tests/test_concurrent_
 
 Setup: one computer, one redstone link bridge.
 
-Times 255 `sendLinkSignal` calls. If it's <50ms, calls are synchronous and
-the "write data lanes, then bump clock" invariant holds naturally. If it's
-seconds, calls yield the coroutine and we **need** the `clock=15` sentinel
-pattern (sender writes sentinel, then data, then real seq).
+Times 255 sequential `sendLinkSignal` calls. Empirical result on the
+reference setup: **exactly 50.000 ms/call** — every call yields the coroutine
+for one Minecraft tick. 255 calls = 12.75 s. The "write data lanes, then
+bump clock" invariant is preserved by the sentinel pattern, but the sequential
+per-sender throughput ceiling is 4 bits / 50 ms = **80 bps**.
 
-We ship the sentinel either way for forward compatibility, but this tells us
-whether the symbol period also needs widening.
+That makes `test_parallel_yield` the pivotal next test.
+
+#### 1b. `test_parallel_yield` — does `parallel.waitForAll` amortize?
+
+If 255 coroutines each issue one `sendLinkSignal` and their yields overlap
+within a single tick, throughput is recoverable to the spec's ~1 KB/s.
+If the mod serializes calls regardless, the 80 bps ceiling holds and
+the spec needs a redesign for skinnier symbols.
+
+The test sweeps N ∈ {1, 16, 64, 255} so partial amortization is visible.
 
 #### 2. `test_self_propagation` + `test_cross_send`/`test_cross_recv` — propagation delay
 

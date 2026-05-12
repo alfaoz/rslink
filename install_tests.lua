@@ -7,6 +7,7 @@ local BASE = "https://raw.githubusercontent.com/alfaoz/rslink/main/tests/"
 local DEST = "/rslink-tests"
 local FILES = {
   "test_yield.lua",
+  "test_parallel_yield.lua",
   "test_self_propagation.lua",
   "test_cross_send.lua",
   "test_cross_recv.lua",
@@ -54,6 +55,7 @@ print()
 print("Quick start (cd to the test dir first):")
 print("  cd " .. DEST)
 print("  test_yield                    -- one computer, one bridge")
+print("  test_parallel_yield           -- one computer, one bridge")
 print("  test_self_propagation         -- one computer, one bridge")
 print()
 print("Cross-bridge propagation (2 computers, 2 bridges, same freq pair):")
