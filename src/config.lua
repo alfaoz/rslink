@@ -57,16 +57,15 @@ M.MIN_NODE_ID  = 1
 M.MAX_NODE_ID  = 254
 
 -- MAC
-M.MAC_CARRIER_SENSE_TICKS = 3
-M.MAC_BACKOFF_MIN_TICKS   = 5
-M.MAC_BACKOFF_MAX_TICKS   = 30
+M.MAC_CARRIER_SENSE_TICKS = 1   -- with ordered-clear, one IDLE sample is enough
+M.MAC_BACKOFF_MIN_TICKS   = 2
+M.MAC_BACKOFF_MAX_TICKS   = 12
 
 -- Reliability
--- The receiver has to wait for our full transmit + 6-tick settle + ~6-tick
--- ordered clear before its carrier-sense can succeed, then transmit its own
--- ACK back with the same overhead. For a 1-symbol ping that's ~45 ticks
--- (2.3 s) on the happy path; 4 s leaves room for a backoff cycle or two.
-M.DEFAULT_ACK_TIMEOUT_S = 4.0
+-- With v0.1.6 diff-writes the per-symbol round trip drops to roughly
+-- 15-20 ticks on the happy path, but ACK can still need a backoff cycle.
+-- 3 s leaves comfortable margin.
+M.DEFAULT_ACK_TIMEOUT_S = 3.0
 M.DEFAULT_MAX_RETRIES   = 3
 M.BACKOFF_MS            = { 200, 400, 800 }
 M.DEDUP_WINDOW          = 16

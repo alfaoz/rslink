@@ -47,6 +47,15 @@ function M.new(opts)
   self.tx_symbol_seq   = 0     -- our next SYMBOL_SEQ counter (0..255)
   self.last_real_clock = nil   -- last real-seq clock value latched (1..14)
   self.saw_sentinel    = false -- observed IDLE or SENTINEL since last latch?
+  -- bridge_state[lane] mirrors the value currently held on our bridge for
+  -- each (i,j) pair (lane 0 = clock, 1..255 = data). Used to diff-write:
+  -- we only call sendLinkSignal for lanes whose target value differs from
+  -- what we last set. Synced with the actual peripheral by force_clear().
+  self.bridge_state = {}
+  for lane = 0, 255 do self.bridge_state[lane] = 0 end
+  -- Force the peripheral to match our zero-state assumption in case a
+  -- previous Lua session crashed without calling close().
+  self:force_clear()
   return self
 end
 
@@ -57,33 +66,43 @@ end
 -- transmit_symbol(nibbles_254)  — nibbles[1..254], values 0..15
 -- Lane 255 is implicitly 0. Caller has already prepended SYMBOL_SEQ as
 -- nibbles[1..2].
+--
+-- Diff-write optimization: we maintain bridge_state[] mirroring what the
+-- peripheral currently holds, and only call sendLinkSignal for lanes whose
+-- desired value differs. For a small payload that touches ~30 of 255 lanes,
+-- this collapses ~5 ticks of parallel writes down to ~1 tick.
 function M:transmit_symbol(nibbles)
   local bridge = self.bridge
   local alpha  = self.alphabet
   local cf1    = alpha[1]   -- (1,1) is clock lane (lane 0)
   local cf2    = alpha[1]
+  local state  = self.bridge_state
 
-  -- 1. Sentinel: park clock at 15 so any receiver polling now ignores us.
+  -- 1. Sentinel: park clock at SENTINEL so any receiver polling now skips.
   bridge.sendLinkSignal(cf1, cf2, SENTINEL)
+  state[0] = SENTINEL
 
-  -- 2. Parallel-dispatch all 255 data lanes. Each call yields ~1 tick;
-  --    parallel.waitForAll lets them overlap in 2 ticks total for N=255.
+  -- 2. Diff-write data lanes — only the ones that change.
   local fns = {}
+  local n = 0
   for lane = 1, DATA_LANES do
     local v = nibbles[lane] or 0
-    local i = math.floor(lane / 16) + 1
-    local j = (lane % 16) + 1
-    local f1, f2 = alpha[i], alpha[j]
-    fns[lane] = function()
-      bridge.sendLinkSignal(f1, f2, v)
+    if v ~= state[lane] then
+      local i = math.floor(lane / 16) + 1
+      local j = (lane % 16) + 1
+      local f1, f2 = alpha[i], alpha[j]
+      n = n + 1
+      fns[n] = function() bridge.sendLinkSignal(f1, f2, v) end
+      state[lane] = v
     end
   end
-  parallel.waitForAll(table.unpack(fns))
+  if n > 0 then parallel.waitForAll(table.unpack(fns)) end
 
   -- 3. Publish real seq number → receivers latch and read all data lanes.
   -- Cycle through 1..MAX_SEQ (skip 0, which is the IDLE marker).
   self.tx_clock_seq = (self.tx_clock_seq % MAX_SEQ) + 1
   bridge.sendLinkSignal(cf1, cf2, self.tx_clock_seq)
+  state[0] = self.tx_clock_seq
 end
 
 -- transmit_frame_bytes(byte_array) — splits into 126-byte chunks, prepends
@@ -131,42 +150,65 @@ function M:transmit_frame_bytes(bytes)
   end
 
   -- Settle: hold the last symbol on the wire long enough that any receiver
-  -- whose poll caught clock=N can finish its ~5-tick parallel read of the
-  -- 255 data lanes BEFORE clear_lanes starts zeroing them. Without this,
-  -- the receiver gets a torn (half-real, half-zero) read but the re-check
-  -- passes because the clock lane isn't cleared until phase 2 → silent
-  -- CRC failures = ghost-quiet broadcasts.
-  os.sleep(0.30)
+  -- whose poll caught clock=N can finish its parallel read of the 255 data
+  -- lanes BEFORE clear_lanes starts zeroing them. Tested receiver-side
+  -- batch read is ~2 ticks; 0.20s (4 ticks) gives 2 ticks of margin.
+  os.sleep(0.20)
 
   -- Release the bus: zero all 256 lanes so we stop holding values.
   self:clear_lanes()
 end
 
--- clear_lanes — zero every lane on our bridge so we stop dominating the wire.
--- Order matters: data lanes first (in parallel), clock lane LAST. That way
--- the wire-clock dropping to IDLE (0) is the canonical signal that ALL of our
--- lanes have settled — carrier-sense on the clock lane is then sufficient
--- for other senders to know it's safe to transmit.
+-- clear_lanes — zero the lanes we are currently holding non-zero on, so we
+-- stop dominating the wire. Diff-clear (using bridge_state) means a small
+-- frame only writes back the few lanes it dirtied (~1 tick) instead of all
+-- 255 (~5 ticks). Order matters: data lanes first (in parallel), clock
+-- lane LAST. wire-clock dropping to IDLE is the canonical "we are done"
+-- signal that other senders' carrier-sense waits for.
 function M:clear_lanes()
   local bridge = self.bridge
   local alpha  = self.alphabet
   local cf1, cf2 = alpha[1], alpha[1]
+  local state  = self.bridge_state
 
-  -- Phase 1: zero data lanes (1..255) in parallel.
+  -- Phase 1: zero data lanes that we are currently holding non-zero.
   local fns = {}
+  local n = 0
   for lane = 1, 255 do
-    local i = math.floor(lane / 16) + 1
-    local j = (lane % 16) + 1
-    local f1, f2 = alpha[i], alpha[j]
-    fns[lane] = function() bridge.sendLinkSignal(f1, f2, 0) end
+    if state[lane] ~= 0 then
+      local i = math.floor(lane / 16) + 1
+      local j = (lane % 16) + 1
+      local f1, f2 = alpha[i], alpha[j]
+      n = n + 1
+      fns[n] = function() bridge.sendLinkSignal(f1, f2, 0) end
+      state[lane] = 0
+    end
   end
-  parallel.waitForAll(table.unpack(fns))
+  if n > 0 then parallel.waitForAll(table.unpack(fns)) end
 
   -- Phase 2: clock lane to IDLE last → publishes "we are done" atomically.
   bridge.sendLinkSignal(cf1, cf2, IDLE)
+  state[0] = IDLE
 
   -- Mark interruption so our own RX re-latches on the next real symbol.
   self.saw_sentinel = true
+end
+
+-- force_clear — unconditional zero of every lane on our bridge, ignoring
+-- bridge_state. Used at construction time to sync the peripheral to our
+-- assumed-zero state in case a prior crash left it dirty.
+function M:force_clear()
+  local bridge = self.bridge
+  local alpha  = self.alphabet
+  local fns = {}
+  for lane = 0, 255 do
+    local i = math.floor(lane / 16) + 1
+    local j = (lane % 16) + 1
+    local f1, f2 = alpha[i], alpha[j]
+    fns[lane + 1] = function() bridge.sendLinkSignal(f1, f2, 0) end
+    self.bridge_state[lane] = 0
+  end
+  parallel.waitForAll(table.unpack(fns))
 end
 
 --------------------------------------------------------------------------------
